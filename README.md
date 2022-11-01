@@ -24,11 +24,13 @@ Driver script (written in BASH which integrates the workload to perform concurre
    *  *-DPERCONASERVER*=**ON** - build pstress with Percona Server
    *  *-DMYSQL*=**ON** - build pstress with MySQL Server
    *  *-DPERCONACLUSTER*=**ON** - build pstress with Percona XtraDB Cluster
-4. If you have MySQL | Percona Server | Percona XtraDB Cluster installed to some custom location you may consider setting the additional flags to cmake: *MYSQL_INCLUDE_DIR* and *MYSQL_LIBRARY*. OR, you can set *BASEDIR* variable if you have binary tarball extracted to some custom place for fully automatic library detection (recommended).
+   *  *-DMARIADB*=**ON** - build pstress with MariaDB Server
+4. If you have MySQL | Percona Server | Percona XtraDB Cluster | MariaDB Server installed to some custom location you may consider setting the additional flags to cmake: *MYSQL_INCLUDE_DIR* and *MYSQL_LIBRARY*. OR, you can set *BASEDIR* variable if you have binary tarball extracted to some custom place for fully automatic library detection (recommended).
 5. The resulting binary will automatically receive an appropriate flavor suffix:
   * *pstress-ms* for MySQL
   * *pstress-ps* for Percona Server
   * *pstress-pxc* for Percona XtraDB Cluster
+  * *pstress-md* for MariaDB Server
 
 # Can you give an easy build example using an extracted Percona Server tarball?
 ```
