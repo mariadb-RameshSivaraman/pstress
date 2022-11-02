@@ -1512,6 +1512,7 @@ void Table::CreateDefaultIndex() {
 /* Create new table and pick some attributes */
 Table *Table::table_id(TABLE_TYPES type, int id, Thd1 *thd) {
   Table *table;
+  (void)thd;
   std::string name = "tt_" + std::to_string(id);
   switch (type) {
   case PARTITION:
@@ -1572,8 +1573,7 @@ Table *Table::table_id(TABLE_TYPES type, int id, Thd1 *thd) {
           table->encryption = g_encryption.at(rand_index);
   }
 
-  /* if temporary table encrypt variable set create encrypt table */
-
+  /* if temporary table encrypt variable set create encrypt table
   auto row = mysql_fetch_row(
       get_result("select @@innodb_temp_tablespace_encrypt", thd));
   static std::string temp_table_encrypt = row[0];
@@ -1582,7 +1582,7 @@ Table *Table::table_id(TABLE_TYPES type, int id, Thd1 *thd) {
       temp_table_encrypt.compare("ON") == 0 && table->type == TEMPORARY)
     table->encryption = 'Y';
 
-  /* if innodb system is encrypt , create encrypt table */
+  // if innodb system is encrypt , create encrypt table
   auto row1 = mysql_fetch_row(
       get_result("select @@innodb_sys_tablespace_encrypt", thd));
   static std::string system_table_encrypt = row1[0];
@@ -1592,7 +1592,7 @@ Table *Table::table_id(TABLE_TYPES type, int id, Thd1 *thd) {
       system_table_encrypt.compare("ON") == 0) {
     table->encryption = 'Y';
   }
-
+  */
   /* 25 % tables are compress */
   if (table->type != TEMPORARY && table->tablespace.empty() and
       rand_int(3) == 1 && g_compression.size() > 0) {
