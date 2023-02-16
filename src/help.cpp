@@ -361,6 +361,13 @@ void add_options() {
   opt->setSQL();
   opt->setDDL();
 
+  /* Reload keyring component configuration */
+  opt = newOption(Option::INT, Option::ALTER_INSTANCE_RELOAD_KEYRING, "reload-keyring");
+  opt->help = "Alter instance reload keyring";
+  opt->setInt(1);
+  opt->setSQL();
+  opt->setDDL();
+
   /* rotate redo log key */
   opt = newOption(Option::INT, Option::ROTATE_REDO_LOG_KEY,
                   "rotate-redo-log-key");
@@ -372,7 +379,7 @@ void add_options() {
   /*Tablespace Encrytion */
   opt = newOption(Option::INT, Option::ALTER_TABLESPACE_ENCRYPTION,
                   "alt-tbs-enc");
-  opt->help = "Alter tablespace set Encryption including the msysql tablespace";
+  opt->help = "Alter tablespace set Encryption including the mysql tablespace";
   opt->setInt(1);
   opt->setSQL();
   opt->setDDL();
@@ -638,7 +645,7 @@ void add_options() {
   /* log all queries */
   opt = newOption(Option::BOOL, Option::LOG_ALL_QUERIES, "log-all-queries");
   opt->help = "Log all queries (succeeded and failed)";
-  opt->setBool(true); // todo diable while merge
+  opt->setBool(false);
   opt->setArgs(no_argument);
 
   /* execute sql sequentially */
@@ -677,7 +684,7 @@ void add_options() {
   opt =
       newOption(Option::BOOL, Option::LOG_FAILED_QUERIES, "log-failed-queries");
   opt->help = "Log all failed queries";
-  opt->setBool(false);
+  opt->setBool(true);
   opt->setArgs(no_argument);
 
   /* log success queries */

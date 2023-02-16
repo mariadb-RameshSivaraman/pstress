@@ -5,7 +5,7 @@
 
 # ========================================= User configurable variables ==========================================================
 # Note: if an option is passed to this script, it will use that option as the configuration file instead, for example ./pstress-run.sh pstress-run.conf
-CONFIGURATION_FILE=pstress-run.conf  # Do not use any path specifiers, the .conf file should be in the same path as pstress-run.sh
+CONFIGURATION_FILE=pstress-run-80.conf  # Do not use any path specifiers, the .conf file should be in the same path as pstress-run.sh
 
 # ========================================= MAIN CODE ============================================================================
 # Internal variables: DO NOT CHANGE!
@@ -27,9 +27,7 @@ fi
 
 # RocksDB does not support encryption. Disable all keyring encryption types
 if [ "${ENGINE}" == "RocksDB" ]; then
-  KEYRING_FILE=0
-  KEYRING_COMPONENT=0
-  KEYRING_VAULT=0
+  ENCRYPTION_RUN=0
 fi
 
 # Check no two encryption types are enabled at the same time
@@ -54,13 +52,13 @@ fi
 if [ "${WORKDIR}" == "/sd[a-z][/]" ]; then echo "Assert! \$WORKDIR == '${WORKDIR}' - is it missing the \$RANDOMD suffix?"; exit 1; fi
 if [ "${RUNDIR}" == "/dev/shm[/]" ]; then echo "Assert! \$RUNDIR == '${RUNDIR}' - is it missing the \$RANDOMD suffix?"; exit 1; fi
 if [ "$(echo ${RANDOMD} | sed 's|[0-9]|/|g')" != "//////" ]; then echo "Assert! \$RANDOMD == '${RANDOMD}'. This looks incorrect - it should be 6 numbers exactly"; exit 1; fi
-if [ "${SKIPCHECKDIRS}" == "" ]; then  # Used in/by pquery-reach.sh TODO: find a better way then hacking to avoid these checks. Check; why do they fail when called from pquery-reach.sh?
+if [ "${SKIPCHECKDIRS}" == "" ]; then
   if [ "$(echo ${WORKDIR} | grep -oi "$RANDOMD" | head -n1)" != "${RANDOMD}" ]; then echo "Assert! \$WORKDIR == '${WORKDIR}' - is it missing the \$RANDOMD suffix?"; exit 1; fi
   if [ "$(echo ${RUNDIR}  | grep -oi "$RANDOMD" | head -n1)" != "${RANDOMD}" ]; then echo "Assert! \$RUNDIR == '${RUNDIR}' - is it missing the \$RANDOMD suffix?"; exit 1; fi
 fi
 
 # Other safety checks
-if [ "$(echo ${PSTRESS_BIN} | sed 's|\(^/pquery\)|\1|')" == "/pquery" ]; then echo "Assert! \$PSTRESS_BIN == '${PSTRESS_BIN}' - is it missing the \$SCRIPT_PWD prefix?"; exit 1; fi
+if [ "$(echo ${PSTRESS_BIN} | sed 's|\(^/pstress\)|\1|')" == "/pstress" ]; then echo "Assert! \$PSTRESS_BIN == '${PSTRESS_BIN}' - is it missing the \$SCRIPT_PWD prefix?"; exit 1; fi
 if [ ! -r ${PSTRESS_BIN} ]; then echo "${PSTRESS_BIN} specified in the configuration file used (${SCRIPT_PWD}/${CONFIGURATION_FILE}) cannot be found/read"; exit 1; fi
 if [ ! -r ${OPTIONS_INFILE} ]; then echo "${OPTIONS_INFILE} specified in the configuration file used (${SCRIPT_PWD}/${CONFIGURATION_FILE}) cannot be found/read"; exit 1; fi
 
@@ -122,6 +120,62 @@ pxc_bug_found(){
   done;
 }
 
+create_global_manifest() {
+  echoit "Creating global manifest file mysqld.my"
+  cat << EOF >${BASEDIR}/bin/mysqld.my
+{
+  "read_local_manifest": true
+}
+EOF
+}
+
+create_local_manifest() {
+  node=$1
+  echoit "Creating local manifest file mysqld.my"
+  if [ $# -eq 0 ]; then
+    cat << EOF >${RUNDIR}/${TRIAL}/data/mysqld.my
+{
+ "components": "file://component_keyring_file"
+}
+EOF
+  else
+    cat << EOF >${RUNDIR}/${TRIAL}/node$node/mysqld.my
+{
+ "components": "file://component_keyring_file"
+}
+EOF
+  fi
+}
+
+create_global_config() {
+  echoit "Creating global configuration file component_keyring_file.cnf"
+  cat << EOF >${BASEDIR}/lib/plugin/component_keyring_file.cnf
+{
+  "read_local_config": true
+}
+EOF
+}
+
+create_local_config() {
+  node=$1
+  echoit "Creating local configuration file component_keyring_file.cnf"
+  if [ $# -eq 0 ]; then
+    cat << EOF >${RUNDIR}/${TRIAL}/data/component_keyring_file.cnf
+{
+ "path": "${RUNDIR}/${TRIAL}/data/component_keyring_file",
+ "read_only": false
+}
+EOF
+  else
+    cat << EOF >${RUNDIR}/${TRIAL}/node$node/component_keyring_file.cnf
+{
+ "path": "${RUNDIR}/${TRIAL}/node$node/component_keyring_file",
+ "read_only": false
+}
+EOF
+  fi
+}
+
 # Find mysqld binary
 if [ -r ${BASEDIR}/bin/mysqld ]; then
   BIN=${BASEDIR}/bin/mysqld
@@ -148,11 +202,11 @@ if [ "$(whoami)" == "root" ]; then MYEXTRA="--user=root ${MYEXTRA}"; fi
 if [ "${PXC_CLUSTER_RUN}" == "1" ]; then
   echoit "As PXC_CLUSTER_RUN=1, this script is auto-assuming this is a PXC run and will set PXC=1"
   PXC=1
-  THREADS=$(cat ${PXC_CLUSTER_CONFIG} | grep threads | head -n1 | sed 's/.*=//' | sed 's/^ *//g')
+  THREADS=$(cat ${PXC_CLUSTER_CONFIG} | grep ^threads | head -n1 | sed 's/.*=//' | sed 's/^ *//g')
 elif [ "${GRP_RPL_CLUSTER_RUN}" == "1" ]; then
   echoit "As GRP_RPL_CLUSTER_RUN=1, this script is auto-assuming this is a Group Replication run and will set GRP_RPL=1"
   GRP_RPL=1
-  THREADS=$(cat ${GR_CLUSTER_CONFIG} | grep threads | grep -v "#" | head -n1 | sed 's/.*=//' | sed 's/^ *//g')
+  THREADS=$(cat ${GR_CLUSTER_CONFIG} | grep ^threads | grep -v "#" | head -n1 | sed 's/.*=//' | sed 's/^ *//g')
 fi
 if [ "${PXC}" == "1" ]; then
   if [ ${QUERIES_PER_THREAD} -lt 2147483647 ]; then  # Starting up a cluster takes more time, so don't rotate too quickly
@@ -306,22 +360,10 @@ if [[ $PXC -eq 1 ]];then
   echo "core-file" >> ${BASEDIR}/my.cnf
   echo "log-output=none" >> ${BASEDIR}/my.cnf
   echo "wsrep_slave_threads=2" >> ${BASEDIR}/my.cnf
-  if [[ "$ENCRYPTION_RUN" == 1 ]];then
-    echo "log_bin=binlog" >> ${BASEDIR}/my.cnf
-    echo "binlog_format=ROW" >> ${BASEDIR}/my.cnf
-    echo "gtid_mode=ON" >> ${BASEDIR}/my.cnf
-    echo "enforce_gtid_consistency=ON" >> ${BASEDIR}/my.cnf
-    echo "master_verify_checksum=on" >> ${BASEDIR}/my.cnf
-    echo "binlog_checksum=CRC32" >> ${BASEDIR}/my.cnf
-    echo "pxc_encrypt_cluster_traffic=ON" >> ${BASEDIR}/my.cnf
-    if check_for_version $MYSQL_VERSION "8.0.0" ; then
-      echo "binlog_encryption=ON" >> ${BASEDIR}/my.cnf
-    fi
-  else
-    if check_for_version $MYSQL_VERSION "8.0.0" ; then
-      echo "pxc_encrypt_cluster_traffic=OFF" >> ${BASEDIR}/my.cnf
-    fi
-  fi
+  echo "gtid_mode=ON" >> ${BASEDIR}/my.cnf
+  echo "enforce_gtid_consistency=ON" >> ${BASEDIR}/my.cnf
+  echo "master_verify_checksum=on" >> ${BASEDIR}/my.cnf
+  echo "binlog_checksum=CRC32" >> ${BASEDIR}/my.cnf
 fi
 pxc_startup(){
   IS_STARTUP=$1
@@ -335,32 +377,7 @@ pxc_startup(){
   else
     MID="${BASEDIR}/bin/mysqld --no-defaults --basedir=${BASEDIR}"
   fi
-  pxc_startup_chk(){
-    ERROR_LOG=$1
-    if grep -qi "ERROR. Aborting" $ERROR_LOG ; then
-      if grep -qi "TCP.IP port. Address already in use" $ERROR_LOG ; then
-        echoit "Assert! The text '[ERROR] Aborting' was found in the error log due to a IP port conflict (the port was already in use)"
-        removetrial
-      else
-        if [ ${PXC_ADD_RANDOM_OPTIONS} -eq 0 ]; then  # Halt for PXC_ADD_RANDOM_OPTIONS=0 runs which have 'ERROR. Aborting' in the error log, as they should not produce errors like these, given that the PXC_MYEXTRA and WSREP_PROVIDER_OPT lists are/should be high-quality/non-faulty
-          echoit "Assert! '[ERROR] Aborting' was found in the error log. This is likely an issue with one of the \$PXC_MYEXTRA (${PXC_MYEXTRA}) startup or \$WSREP_PROVIDER_OPT ($WSREP_PROVIDER_OPT) congifuration options. Saving trial for further analysis, and dumping error log here for quick analysis. Please check the output against these variables settings. The respective files for these options (${PXC_WSREP_OPTIONS_INFILE} and ${PXC_WSREP_PROVIDER_OPTIONS_INFILE}) may require editing."
-          grep "ERROR" $ERROR_LOG | tee -a /${WORKDIR}/pstress-run.log
-          if [ ${PXC_IGNORE_ALL_OPTION_ISSUES} -eq 1 ]; then
-            echoit "PXC_IGNORE_ALL_OPTION_ISSUES=1, so irrespective of the assert given, pstress-run.sh will continue running. Please check your option files!"
-          else
-            savetrial
-            echoit "Remember to cleanup/delete the rundir:  rm -Rf ${RUNDIR}"
-            exit 1
-          fi
-        else  # Do not halt for PXC_ADD_RANDOM_OPTIONS=1 runs, they are likely to produce errors like these as PXC_MYEXTRA was randomly changed
-          echoit "'[ERROR] Aborting' was found in the error log. This is likely an issue with one of the \$PXC_MYEXTRA (${PXC_MYEXTRA}) startup options. As \$PXC_ADD_RANDOM_OPTIONS=1, this is likely to be encountered given the random addition of mysqld options. Not saving trial. If you see this error for every trial however, set \$PXC_ADD_RANDOM_OPTIONS=0 & try running pstress-run.sh again. If it still fails, it is likely that your base \$MYEXTRA (${MYEXTRA}) setting is faulty."
-          grep "ERROR" $ERROR_LOG | tee -a /${WORKDIR}/pstress-run.log
-          FAILEDSTARTABORT=1
-          break
-        fi
-      fi
-    fi
-  }
+
   if [ "$IS_STARTUP" != "startup" ]; then
     echo "echo '=== Starting PXC cluster for recovery...'" > ${RUNDIR}/${TRIAL}/start_pxc_recovery
     echo "sed -i 's|safe_to_bootstrap:.*$|safe_to_bootstrap: 1|' ${WORKDIR}/${TRIAL}/node1/grastate.dat" >> ${RUNDIR}/${TRIAL}/start_pxc_recovery
@@ -372,7 +389,6 @@ pxc_startup(){
       if ${BASEDIR}/bin/mysqladmin -uroot -S${SOCKET} ping > /dev/null 2>&1; then
         break
       fi
-      pxc_startup_chk ${ERR_FILE}
     done
   }
   unset PXC_PORTS
@@ -402,7 +418,11 @@ pxc_startup(){
     sed -i "2i log-error=$node/node${i}.err" ${DATADIR}/n${i}.cnf
     sed -i "2i port=$RBASE1" ${DATADIR}/n${i}.cnf
     sed -i "2i datadir=$node" ${DATADIR}/n${i}.cnf
-    if [ ${ENCRYPTION_RUN} -eq 1 ]; then
+    if [ ${ENCRYPTION_RUN} -eq 1 -a "$IS_STARTUP" != "startup" ]; then
+      sed -i "2i pxc_encrypt_cluster_traffic=ON" ${DATADIR}/n${i}.cnf
+      if check_for_version $MYSQL_VERSION "8.0.0" ; then
+        sed -i "2i binlog_encryption=ON" ${DATADIR}/n${i}.cnf
+      fi
       if [ ${KEYRING_FILE} -eq 1 ]; then
         sed -i "2i early-plugin-load=keyring_file.so" ${DATADIR}/n${i}.cnf
         if [ "$IS_STARTUP" == "startup" ]; then
@@ -433,15 +453,17 @@ pxc_startup(){
     echo "encrypt = 4" >> ${DATADIR}/n${i}.cnf
     echo "ssl-ca = ${WORKDIR}/cert/ca.pem" >> ${DATADIR}/n${i}.cnf
     echo "ssl-cert = ${WORKDIR}/cert/server-cert.pem" >> ${DATADIR}/n${i}.cnf
-    echo "ssl-key = ${WORKDIR}/cert/server-key.pem" >> ${DATADIR}/n${i}.cnf    
+    echo "ssl-key = ${WORKDIR}/cert/server-key.pem" >> ${DATADIR}/n${i}.cnf
     if [ "$IS_STARTUP" == "startup" ]; then
       ${MID} --datadir=$node  > ${WORKDIR}/startup_node${i}.err 2>&1 || exit 1;
     fi
   done
-    if [ "$IS_STARTUP" == "startup" ]; then
-	  mkdir ${WORKDIR}/cert
-	  cp ${WORKDIR}/node1.template/*.pem ${WORKDIR}/cert/
-    fi
+
+  if [ "$IS_STARTUP" == "startup" ]; then
+    mkdir ${WORKDIR}/cert
+    cp ${WORKDIR}/node1.template/*.pem ${WORKDIR}/cert/
+  fi
+
   get_error_socket_file(){
     NR=$1
     if [ "$IS_STARTUP" == "startup" ]; then
@@ -796,7 +818,6 @@ pstress_test(){
     else
       mkdir -p ${RUNDIR}/${TRIAL}/data/test ${RUNDIR}/${TRIAL}/data/mysql ${RUNDIR}/${TRIAL}/tmp ${RUNDIR}/${TRIAL}/log
     fi
-    echo 'SELECT 1;' > ${RUNDIR}/${TRIAL}/startup_failure_thread-0.sql  # Add fake file enabling pquery-prep-red.sh/reducer.sh to be used with/for mysqld startup issues
     if [[ ${TRIAL} -gt 1 && $REINIT_DATADIR -eq 0 ]]; then
       echoit "Copying datadir from Trial $WORKDIR/$((${TRIAL}-1)) into $WORKDIR/${TRIAL}..."
     else
@@ -810,32 +831,26 @@ pstress_test(){
     else
       cp -R ${WORKDIR}/data.template/* ${RUNDIR}/${TRIAL}/data 2>&1
       if [ ${KEYRING_COMPONENT} -eq 1 ]; then
-        echoit "Creating local manifest file mysqld.my"
-        cat << EOF >${RUNDIR}/${TRIAL}/data/mysqld.my
-{
- "components": "file://component_keyring_file"
-}
-EOF
-      echoit "Creating local configuration file component_keyring_file.cnf"
-      cat << EOF >${RUNDIR}/${TRIAL}/data/component_keyring_file.cnf
-{
- "path": "${RUNDIR}/${TRIAL}/data/component_keyring_file",
- "read_only": false
-}
-EOF
+        create_local_manifest
+        create_local_config
       fi
     fi
-    MYEXTRA_SAVE_IT=${MYEXTRA}
+    MYEXTRA=
     if [ "${ADD_RANDOM_OPTIONS}" == "" ]; then  # Backwards compatibility for .conf files without this option
        ADD_RANDOM_OPTIONS=0
     fi
     if [ ${ADD_RANDOM_OPTIONS} -eq 1 ]; then  # Add random mysqld --options to MYEXTRA
       OPTIONS_TO_ADD=
       NR_OF_OPTIONS_TO_ADD=$(( RANDOM % MAX_NR_OF_RND_OPTS_TO_ADD + 1 ))
+      OPTION_NAME=()
       for X in $(seq 1 ${NR_OF_OPTIONS_TO_ADD}); do
         OPTION_TO_ADD="$(shuf --random-source=/dev/urandom ${OPTIONS_INFILE} | head -n1)"
-        if [ "$(echo ${OPTION_TO_ADD} | sed 's| ||g;s|.*query.alloc.block.size=1125899906842624.*||' )" != "" ]; then  # http://bugs.mysql.com/bug.php?id=78238
-          OPTIONS_TO_ADD="${OPTIONS_TO_ADD} ${OPTION_TO_ADD}"
+        if [ ${#OPTION_NAME[@]} -eq 0 ]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
+        elif [[ ! ${OPTION_NAME[@]} =~ ${OPTION_TO_ADD%=*} ]]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
         fi
       done
       echoit "ADD_RANDOM_OPTIONS=1: adding mysqld option(s) ${OPTIONS_TO_ADD} to this run's MYEXTRA..."
@@ -845,12 +860,18 @@ EOF
       ADD_RANDOM_ROCKSDB_OPTIONS=0
     fi
     if [ ${ADD_RANDOM_ROCKSDB_OPTIONS} -eq 1 ]; then  # Add random rocksdb --options to MYEXTRA
-      OPTION_TO_ADD=
       OPTIONS_TO_ADD=
       NR_OF_OPTIONS_TO_ADD=$(( RANDOM % MAX_NR_OF_RND_OPTS_TO_ADD + 1 ))
+      OPTION_NAME=()
       for X in $(seq 1 ${NR_OF_OPTIONS_TO_ADD}); do
         OPTION_TO_ADD="$(shuf --random-source=/dev/urandom ${ROCKSDB_OPTIONS_INFILE} | head -n1)"
-        OPTIONS_TO_ADD="${OPTIONS_TO_ADD} ${OPTION_TO_ADD}"
+	if [ ${#OPTION_NAME[@]} -eq 0 ]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
+        elif [[ ! ${OPTION_NAME[@]} =~ ${OPTION_TO_ADD%=*} ]]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
+        fi
       done
       echoit "ADD_RANDOM_ROCKSDB_OPTIONS=1: adding RocksDB mysqld option(s) ${OPTIONS_TO_ADD} to this run's MYEXTRA..."
       MYEXTRA="${MYEXTRA} ${OPTIONS_TO_ADD}"
@@ -915,13 +936,14 @@ EOF
       fi
 
       if [ $(ls -l ${RUNDIR}/${TRIAL}/*/*core* 2>/dev/null | wc -l) -ge 1 ]; then break; fi  # Break the wait-for-server-started loop if a core file is found. Handling of core is done below.
+      # Check if mysqld is alive and if so, set ISSTARTED=1 so pstress will run
+      if ${BASEDIR}/bin/mysqladmin -uroot -S${SOCKET} ping > /dev/null 2>&1; then
+        ISSTARTED=1
+        echoit "Server started ok. Client: `echo ${BIN} | sed 's|/mysqld|/mysql|'` -uroot -S${SOCKET}"
+        ${BASEDIR}/bin/mysql -uroot -S${SOCKET} -e "CREATE DATABASE IF NOT EXISTS test;" > /dev/null 2>&1
+        break;
+      fi
     done
-    # Check if mysqld is alive and if so, set ISSTARTED=1 so pstress will run
-    if ${BASEDIR}/bin/mysqladmin -uroot -S${SOCKET} ping > /dev/null 2>&1; then
-      ISSTARTED=1
-      echoit "Server started ok. Client: `echo ${BIN} | sed 's|/mysqld|/mysql|'` -uroot -S${SOCKET}"
-      ${BASEDIR}/bin/mysql -uroot -S${SOCKET} -e "CREATE DATABASE IF NOT EXISTS test;" > /dev/null 2>&1
-    fi
   elif [[ "${PXC}" == "1" ]]; then
     if [[ ${TRIAL} -gt 1 && $REINIT_DATADIR -eq 0 ]]; then
       mkdir -p ${RUNDIR}/${TRIAL}/
@@ -932,12 +954,25 @@ EOF
       echoit "Copying datadir from $WORKDIR/$((${TRIAL}-1))/node3 into ${RUNDIR}/${TRIAL}/node3 ..."
       rsync -ar --exclude={'*core*','node3.err'} ${WORKDIR}/$((${TRIAL}-1))/node3/ ${RUNDIR}/${TRIAL}/node3/ 2>&1
       sed -i 's|safe_to_bootstrap:.*$|safe_to_bootstrap: 1|' ${RUNDIR}/${TRIAL}/node1/grastate.dat
+      if [ ${KEYRING_COMPONENT} -eq 1 ]; then
+        sed -i "s/\/$((${TRIAL}-1))\//\/${TRIAL}\//" ${RUNDIR}/${TRIAL}/node1/component_keyring_file.cnf
+        sed -i "s/\/$((${TRIAL}-1))\//\/${TRIAL}\//" ${RUNDIR}/${TRIAL}/node2/component_keyring_file.cnf
+        sed -i "s/\/$((${TRIAL}-1))\//\/${TRIAL}\//" ${RUNDIR}/${TRIAL}/node3/component_keyring_file.cnf
+      fi
     else
       mkdir -p ${RUNDIR}/${TRIAL}/
       echoit "Copying datadir from template..."
       cp -R ${WORKDIR}/node1.template ${RUNDIR}/${TRIAL}/node1 2>&1
       cp -R ${WORKDIR}/node2.template ${RUNDIR}/${TRIAL}/node2 2>&1
       cp -R ${WORKDIR}/node3.template ${RUNDIR}/${TRIAL}/node3 2>&1
+      if [ ${KEYRING_COMPONENT} -eq 1 ]; then
+	create_local_manifest 1
+	create_local_manifest 2
+	create_local_manifest 3
+	create_local_config 1
+	create_local_config 2
+	create_local_config 3
+      fi
     fi
 
     PXC_MYEXTRA=
@@ -945,10 +980,15 @@ EOF
     if [ ${PXC_ADD_RANDOM_OPTIONS} -eq 1 ]; then
       OPTIONS_TO_ADD=
       NR_OF_OPTIONS_TO_ADD=$(( RANDOM % PXC_MAX_NR_OF_RND_OPTS_TO_ADD + 1 ))
+      OPTION_NAME=()
       for X in $(seq 1 ${NR_OF_OPTIONS_TO_ADD}); do
-        OPTION_TO_ADD="$(shuf --random-source=/dev/urandom ${PXC_OPTIONS_INFILE} | head -n1)"
-        if [ "$(echo ${OPTION_TO_ADD} | sed 's| ||g;s|.*query.alloc.block.size=1125899906842624.*||' )" != "" ]; then  # http://bugs.mysql.com/bug.php?id=78238
-          OPTIONS_TO_ADD="${OPTIONS_TO_ADD} ${OPTION_TO_ADD}"
+	OPTION_TO_ADD="$(shuf --random-source=/dev/urandom ${PXC_OPTIONS_INFILE} | head -n1)"
+        if [ ${#OPTION_NAME[@]} -eq 0 ]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
+        elif [[ ! ${OPTION_NAME[@]} =~ ${OPTION_TO_ADD%=*} ]]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
         fi
       done
       echoit "PXC_ADD_RANDOM_OPTIONS=1: adding mysqld option(s) ${OPTIONS_TO_ADD} to this run's PXC_MYEXTRA..."
@@ -958,9 +998,16 @@ EOF
     if [ ${PXC_WSREP_ADD_RANDOM_WSREP_MYSQLD_OPTIONS} -eq 1 ]; then
       OPTIONS_TO_ADD=
       NR_OF_OPTIONS_TO_ADD=$(( RANDOM % PXC_WSREP_MAX_NR_OF_RND_OPTS_TO_ADD + 1 ))
+      OPTION_NAME=()
       for X in $(seq 1 ${NR_OF_OPTIONS_TO_ADD}); do
         OPTION_TO_ADD="$(shuf --random-source=/dev/urandom ${PXC_WSREP_OPTIONS_INFILE} | head -n1)"
-        OPTIONS_TO_ADD="${OPTIONS_TO_ADD} ${OPTION_TO_ADD}"
+	if [ ${#OPTION_NAME[@]} -eq 0 ]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
+        elif [[ ! ${OPTION_NAME[@]} =~ ${OPTION_TO_ADD%=*} ]]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
+        fi
       done
       echoit "PXC_WSREP_ADD_RANDOM_WSREP_MYSQLD_OPTIONS=1: adding wsrep provider mysqld option(s) ${OPTIONS_TO_ADD} to this run's PXC_MYEXTRA..."
       PXC_MYEXTRA="${PXC_MYEXTRA} ${OPTIONS_TO_ADD}"
@@ -969,9 +1016,16 @@ EOF
     if [ ${PXC_WSREP_PROVIDER_ADD_RANDOM_WSREP_PROVIDER_CONFIG_OPTIONS} -eq 1 ]; then
       OPTIONS_TO_ADD=
       NR_OF_OPTIONS_TO_ADD=$(( RANDOM % PXC_WSREP_PROVIDER_MAX_NR_OF_RND_OPTS_TO_ADD + 1 ))
+      OPTION_NAME=()
       for X in $(seq 1 ${NR_OF_OPTIONS_TO_ADD}); do
         OPTION_TO_ADD="$(shuf --random-source=/dev/urandom ${PXC_WSREP_PROVIDER_OPTIONS_INFILE} | head -n1)"
-        OPTIONS_TO_ADD="${OPTION_TO_ADD};${OPTIONS_TO_ADD}"
+        if [ ${#OPTION_NAME[@]} -eq 0 ]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
+        elif [[ ! ${OPTION_NAME[@]} =~ ${OPTION_TO_ADD%=*} ]]; then
+          OPTIONS_TO_ADD="$OPTIONS_TO_ADD $OPTION_TO_ADD"
+          OPTION_NAME+=(${OPTION_TO_ADD%=*})
+        fi
       done
       echoit "PXC_WSREP_PROVIDER_ADD_RANDOM_WSREP_PROVIDER_CONFIG_OPTIONS=1: adding wsrep provider configuration option(s) ${OPTIONS_TO_ADD} to this run..."
       WSREP_PROVIDER_OPT="$OPTIONS_TO_ADD"
@@ -1370,14 +1424,17 @@ elif [ "${VERSION_INFO}" != "5.7" -a "${VERSION_INFO}" != "8.0" ]; then
   echo "WARNING: mysqld (${BIN}) version detection failed. This is likely caused by using this script with a non-supported distribution or version of mysqld. Please expand this script to handle (which shoud be easy to do). Even so, the script will now try and continue as-is, but this may fail."
 fi
 
+if [ "${VERSION_INFO}" == "5.7" ]; then
+  if [ "${KEYRING_COMPONENT}" == "1" ]; then
+    echoit "Keyring component is un-supported on PS-5.7 and PXC-5.7"
+    exit 1
+  fi
+  KEYRING_COMPONENT=0
+fi
+
 if [ ${ENCRYPTION_RUN} -eq 1 ]; then
-  if [ ${PXC} -eq 1 ]; then
-    if [ ${KEYRING_VAULT} -eq 0 -a ${KEYRING_FILE} -eq 0 ]; then
-      echoit "Enable atleast one encryption type (keyring_vault or keyring_file) if ENCRYPTION_RUN=1"
-      exit 1
-    fi
-  elif [ ${KEYRING_VAULT} -eq 0 -a ${KEYRING_FILE} -eq 0 -a ${KEYRING_COMPONENT} -eq 0 ]; then
-    echoit "Enable atleast one encryption type (keyring_vault or keyring_file or keyring_component) if ENCRYPTION_RUN=1"
+  if [ ${KEYRING_VAULT} -eq 0 -a ${KEYRING_FILE} -eq 0 -a ${KEYRING_COMPONENT} -eq 0 ]; then
+    echoit "Enable atleast one encryption type (keyring_vault or keyring_file) if ENCRYPTION_RUN=1"
     exit 1
   fi
 fi
@@ -1398,54 +1455,26 @@ elif [ ${KEYRING_FILE} -eq 1 ]; then
   KEYRING_PARAM="--early-plugin-load=keyring_file.so --keyring_file_data=keyring"
 fi
 
-# Currently Keyring component is unsupported in PXC
-# Reported JIRA: https://jira.percona.com/browse/PXC-3989
-# Disabling Keyring component until the bug is fixed
-if [ ${PXC} -eq 1 ]; then
-  KEYRING_COMPONENT=0
-elif [ "${VERSION_INFO}" == "5.7" ]; then
-  if [ ${KEYRING_COMPONENT} -eq 1 ]; then
-    echoit "Keyring component is un-supported on PS-5.7"
-    exit 1
-  fi
+if [ ${KEYRING_COMPONENT} -eq 1 ]; then
+  create_global_manifest
+  create_global_config
 fi
 
-if [ ${KEYRING_COMPONENT} -eq 1 ]; then
-  echoit "Creating global manifest file mysqld.my"
-  cat << EOF >${BASEDIR}/bin/mysqld.my
-{
-  "read_local_manifest": true
-}
-EOF
-  echoit "Creating global configuration file component_keyring_file.cnf"
-  cat << EOF >${BASEDIR}/lib/plugin/component_keyring_file.cnf
-{
-  "read_local_config": true
-}
-EOF
-fi
+echoit "Making a copy of the mysqld binary into ${WORKDIR}/mysqld (handy for coredump analysis and manually starting server)..."
+mkdir ${WORKDIR}/mysqld
+cp -R ${BASEDIR}/bin ${WORKDIR}/mysqld/
+echoit "Making a copy of the library files required for starting server from incident directory"
+cp -R ${BASEDIR}/lib ${WORKDIR}/mysqld/
+echoit "Making a copy of the conf file $CONFIGURATION_FILE (useful later during repeating the crashes)..."
+cp ${SCRIPT_PWD}/$CONFIGURATION_FILE ${WORKDIR}/
+echoit "Making a copy of the seed file..."
+echo "${SEED}" > ${WORKDIR}/seed
 
 if [[ ${PXC} -eq 0 && ${GRP_RPL} -eq 0 ]]; then
-  echoit "Making a copy of the mysqld binary into ${WORKDIR}/mysqld (handy for coredump analysis and manually starting server)..."
-  mkdir ${WORKDIR}/mysqld
-  cp -R ${BASEDIR}/bin ${WORKDIR}/mysqld/
-  echoit "Making a copy of the library files required for starting server from incident directory"
-  cp -R ${BASEDIR}/lib ${WORKDIR}/mysqld/
-  echoit "Making a copy of the conf file $CONFIGURATION_FILE (useful later during repeating the crashes)..."
-  cp ${SCRIPT_PWD}/$CONFIGURATION_FILE ${WORKDIR}/
-  echoit "Making a copy of the seed file..."
-  echo "${SEED}" > ${WORKDIR}/seed
   echoit "Generating datadir template (using mysql_install_db or mysqld --init)..."
   ${INIT_TOOL} ${INIT_OPT} --basedir=${BASEDIR} --datadir=${WORKDIR}/data.template > ${WORKDIR}/log/mysql_install_db.txt 2>&1
 elif [[ ${PXC} -eq 1 || ${GRP_RPL} -eq 1 ]]; then
-  echoit "Making a copy of the mysqld binary into ${WORKDIR}/mysqld (handy for coredump analysis and manually starting server)..."
-  mkdir ${WORKDIR}/mysqld
-  cp -R ${BASEDIR}/bin ${WORKDIR}/mysqld/
-  echoit "Making a copy of the library files required for starting server from incident directory"
-  cp -R ${BASEDIR}/lib ${WORKDIR}/mysqld/
-  echoit "Making a copy of the conf file $CONFIGURATION_FILE (useful later during repeating the crashes)..."
-  cp ${SCRIPT_PWD}/$CONFIGURATION_FILE ${WORKDIR}/
-  if [[ ${PXC} -eq 1 ]]; then
+  if [ ${PXC} -eq 1 ]; then
     echoit "Ensuring PXC templates created for pstress run.."
     pxc_startup startup
     sleep 5
@@ -1507,7 +1536,7 @@ for X in $(seq 1 ${TRIALS}); do
   pstress_test
   COUNT=$[ $COUNT + 1 ]
 done
-# All done, wrap up pquery run
+# All done, wrap up pstress run
 echoit "pstress finished requested number of trials (${TRIALS})... Terminating..."
 if [[ ${PXC} -eq 1 || ${GRP_RPL} -eq 1 ]]; then
   echoit "Cleaning up any leftover processes..."
