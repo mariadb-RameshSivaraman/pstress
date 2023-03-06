@@ -677,7 +677,7 @@ void add_options() {
   opt =
       newOption(Option::BOOL, Option::LOG_QUERY_DURATION, "log-query-duration");
   opt->help = "Log query duration in milliseconds";
-  opt->setBool(false);
+  opt->setBool(true);
   opt->setArgs(no_argument);
 
   /* log failed queries */
@@ -827,15 +827,6 @@ void show_help(std::string help) {
 
   void show_help() {
     print_version();
-    std::cout << " - pstress supports two different use/configuration modes; "
-                 "commandline or INI-file. Please see specific help:"
-              << std::endl;
-    std::cout << "=> pstress --config-help for INI-config help, this mode "
-                 "supports SINGLE and MULTIPLE node(s)"
-              << std::endl;
-    std::cout << "=> pstress --cli-help for commandline options, this mode "
-                 "supports a SINGLE node only"
-              << std::endl;
     std::cout << " - For complete help use => pstress  --help --verbose"
               << std::endl;
     std::cout << " - For help on any option => pstress --help=OPTION e.g. \n "
